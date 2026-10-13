@@ -1139,6 +1139,7 @@ impl TdsClient {
             Tokens::Sspi(_) => "Sspi",
             Tokens::Row(_) => "Row",
             Tokens::ColMetadata(_) => "ColMetadata",
+            Tokens::DataClassification(_) => "DataClassification",
             Tokens::Order(_) => "Order",
             Tokens::ReturnStatus(_) => "ReturnStatus",
             Tokens::ReturnValue(_) => "ReturnValue",

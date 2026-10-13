@@ -49,6 +49,10 @@ pub(crate) mod test_utils {
             Self { data, position: 0 }
         }
 
+        pub(crate) fn remaining(&self) -> usize {
+            self.data.len() - self.position
+        }
+
         pub(crate) fn from_i32(value: i32) -> Self {
             let mut buf = vec![0u8; 4];
             LittleEndian::write_i32(&mut buf, value);
