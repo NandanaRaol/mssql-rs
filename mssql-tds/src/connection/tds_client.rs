@@ -5618,6 +5618,11 @@ impl TdsClient {
                 Tokens::TabName | Tokens::ColInfo => {
                     continue;
                 }
+                // Parsed with the negotiated version; result-set attachment is
+                // not implemented yet, so the metadata is not surfaced.
+                Tokens::DataClassification(_) => {
+                    continue;
+                }
                 _ => {
                     info!("advance_to_result_boundary: {:?}", token);
                     return Err(UsageError(format!(
@@ -8153,6 +8158,9 @@ impl TdsClient {
                 Ok(None)
             }
             Tokens::TabName | Tokens::ColInfo => Ok(None),
+            // Sent between COLMETADATA and the first row. Parsed with the
+            // negotiated version; result-set attachment is not implemented yet.
+            Tokens::DataClassification(_) => Ok(None),
             _ => Err(crate::error::Error::ProtocolError(format!(
                 "Unexpected token while finding the next row: {token:?}"
             ))),
@@ -10284,6 +10292,45 @@ mod tests {
         // Ending the request clears it, including when the walk already ended.
         client.close_query().await.unwrap();
         assert_eq!(client.last_result_row_count(), None);
+    }
+
+    /// A DATACLASSIFICATION token follows COLMETADATA. It is parsed but not yet
+    /// attached to the result set, so neither the row loop nor the walk between
+    /// results may treat it as the end of a result or an unexpected token.
+    #[tokio::test]
+    async fn data_classification_tokens_do_not_disturb_result_set_navigation() {
+        use crate::token::data_classification::{
+            DataClassificationMetadata, DataClassificationVersion, SensitivityRank,
+        };
+        fn classification() -> Tokens {
+            Tokens::DataClassification(DataClassificationMetadata {
+                version: DataClassificationVersion::Version2,
+                sensitivity_labels: Vec::new(),
+                information_types: Vec::new(),
+                rank: Some(SensitivityRank::NotDefined),
+                columns: Vec::new(),
+            })
+        }
+
+        let mut client = create_test_client_with_tokens(vec![
+            int_col_metadata(1),
+            classification(),
+            done_count(CurrentCommand::Select, 0, true),
+            classification(),
+            int_col_metadata(1),
+            classification(),
+            done_count(CurrentCommand::Select, 0, false),
+        ]);
+
+        assert_eq!(
+            client.execute("q".to_string(), ()).await.unwrap(),
+            StatementResult::Rows
+        );
+        assert!(client.next_row().await.unwrap().is_none());
+        assert_eq!(client.advance().await.unwrap(), StatementResult::Rows);
+        assert!(client.next_row().await.unwrap().is_none());
+        assert_eq!(client.advance().await.unwrap(), StatementResult::End);
+        assert!(!client.is_connection_dead());
     }
 
     /// Under `Continue` one error can be reflected by both the failing

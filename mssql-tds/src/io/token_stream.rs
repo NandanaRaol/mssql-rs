@@ -2353,4 +2353,38 @@ mod tests {
         assert!(error.contains("not negotiated"), "{error}");
         assert!(!error.contains("Unknown token type"), "{error}");
     }
+
+    #[tokio::test]
+    async fn data_classification_token_is_parsed_with_the_negotiated_version() {
+        use crate::token::data_classification::DataClassificationVersion;
+        use crate::token::parsers::common::test_utils::MockReader;
+
+        let mut reader = MockReader::new(vec![
+            TokenType::DataClassification as u8,
+            0,
+            0, // sensitivity-label count
+            0,
+            0, // information-type count
+            0xFF,
+            0xFF,
+            0xFF,
+            0xFF, // result-set rank: NotDefined (v2 only)
+            0,
+            0, // result-set column count
+            TokenType::Done as u8,
+        ])
+        .with_data_classification_version(DataClassificationVersion::Version2);
+        let registry = GenericTokenParserRegistry::default();
+
+        let token = receive_token_internal(&mut reader, &registry, &ParserContext::default())
+            .await
+            .unwrap();
+
+        assert!(
+            matches!(&token, Tokens::DataClassification(metadata)
+                if metadata.version == DataClassificationVersion::Version2),
+            "{token:?}"
+        );
+        assert_eq!(reader.remaining(), 1, "the next token must be left unread");
+    }
 }

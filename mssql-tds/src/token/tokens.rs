@@ -101,7 +101,7 @@ pub(crate) enum Tokens {
     Sspi(SspiToken),
     Row(RowToken),
     ColMetadata(ColMetadataToken),
-    #[allow(dead_code)] // Produced once the negotiated version reaches token dispatch.
+    #[allow(dead_code)] // Metadata is read once it is attached to result sets.
     DataClassification(crate::token::data_classification::DataClassificationMetadata),
     Order(OrderToken),
     ReturnStatus(ReturnStatusToken),

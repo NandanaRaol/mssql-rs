@@ -30,6 +30,7 @@ use crate::io::token_stream::{
 use crate::message::attention::AttentionRequest;
 use crate::message::login_options::TdsVersion;
 use crate::message::messages::{PacketStatusFlags, PacketType, Request, ResetConnectionMode};
+use crate::token::data_classification::DataClassificationVersion;
 use crate::token::tokens::{ColMetadataToken, DoneStatus, TokenType, Tokens};
 use async_trait::async_trait;
 use byteorder::{BigEndian, ByteOrder, LittleEndian};
@@ -871,6 +872,8 @@ pub(crate) struct NetworkTransport {
     /// `read_nbc_bitmap`.
     nbc_bitmap_scratch: Option<Arc<[u8]>>,
     column_encryption_supported: bool,
+    /// Data Classification version from login, used to parse `0xA3` tokens.
+    data_classification_version: Option<DataClassificationVersion>,
     /// Tokens drained by the transport but still needed by client state handling.
     attention_settlement: Option<Box<AttentionSettlement>>,
 }
@@ -894,6 +897,7 @@ impl NetworkReaderWriter for NetworkTransport {
 
     fn notify_session_setting_change(&mut self, setting: &SessionSettings) {
         self.packet_size = setting.packet_size;
+        self.data_classification_version = setting.data_classification_version();
         // Note: The read buffer's max_packet_size is updated in reset_reader(),
         // which is called before each command execution. This ensures the buffer
         // is properly sized when we start reading the server's response.
@@ -987,6 +991,7 @@ impl NetworkTransport {
             known_dead: false,
             nbc_bitmap_scratch: None,
             column_encryption_supported: false,
+            data_classification_version: None,
             attention_settlement: None,
         }
     }
@@ -1961,6 +1966,10 @@ impl TdsPacketReader for NetworkTransport {
     #[inline]
     fn buffered_slice(&self) -> &[u8] {
         self.tds_read_buffer.get_buffered_slice()
+    }
+
+    fn negotiated_data_classification_version(&self) -> Option<DataClassificationVersion> {
+        self.data_classification_version
     }
 
     fn reset_reader(&mut self) {
@@ -3196,6 +3205,93 @@ pub(crate) mod tests {
     // The choice of 8192 is large enough for sending data. This stream should have a buffer large enough for send.
     // The test would keep the payload lower than this size to make sure that the duplex stream can handle it.
     pub(crate) const MAX_BUFFER_SIZE: usize = 8192;
+
+    mod data_classification {
+        use super::*;
+        use crate::handler::handler_factory::create_test_negotiated_settings_internal;
+        use crate::message::features::data_classification::DataClassificationFeature;
+        use crate::message::login::Feature;
+        use crate::token::data_classification::SensitivityRank;
+
+        /// One unclassified column; v2 adds a NotDefined result-set rank.
+        fn classification_token(version: DataClassificationVersion) -> Vec<u8> {
+            let mut bytes = vec![TokenType::DataClassification as u8, 0, 0, 0, 0];
+            if version == DataClassificationVersion::Version2 {
+                bytes.extend_from_slice(&(-1i32).to_le_bytes());
+            }
+            bytes.extend_from_slice(&[1, 0, 0, 0]);
+            bytes
+        }
+
+        fn transport_with(tokens: &[u8]) -> NetworkTransport {
+            let done = [TokenType::Done as u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+            create_network_transport_with_data(
+                &TestPacketBuilder::new(PacketType::TabularResult)
+                    .append_bytes(tokens)
+                    .append_bytes(&done)
+                    .build(),
+            )
+        }
+
+        fn negotiate(transport: &mut NetworkTransport, ack: &[u8]) {
+            let mut settings = create_test_negotiated_settings_internal().session_settings;
+            let mut feature = DataClassificationFeature::new(DataClassificationVersion::Version2);
+            feature.set_acknowledged(true);
+            feature.deserialize(ack).unwrap();
+            settings.supported_features.push(Box::new(feature));
+            transport.notify_session_setting_change(&settings);
+        }
+
+        #[tokio::test]
+        async fn login_negotiated_version_drives_0xa3_parsing() {
+            for (ack_version, version, rank) in [
+                (0x01, DataClassificationVersion::Version1, None),
+                (
+                    0x02,
+                    DataClassificationVersion::Version2,
+                    Some(SensitivityRank::NotDefined),
+                ),
+            ] {
+                let mut transport = transport_with(&classification_token(version));
+                negotiate(&mut transport, &[ack_version, 0x01]);
+
+                let token = transport
+                    .receive_token(&ParserContext::None(()), None, None)
+                    .await
+                    .unwrap();
+                let Tokens::DataClassification(metadata) = token else {
+                    panic!("expected a DataClassification token, got {token:?}");
+                };
+                assert_eq!(metadata.version, version);
+                assert_eq!(metadata.rank, rank);
+                assert_eq!(metadata.columns.len(), 1);
+                assert!(!metadata.columns[0].is_classified());
+
+                let next = transport
+                    .receive_token(&ParserContext::None(()), None, None)
+                    .await
+                    .unwrap();
+                assert!(matches!(next, Tokens::Done(_)), "{next:?}");
+            }
+        }
+
+        #[tokio::test]
+        async fn rejects_0xa3_unless_the_server_enabled_the_feature() {
+            let version = DataClassificationVersion::Version2;
+            for ack in [None, Some([0x02, 0x00])] {
+                let mut transport = transport_with(&classification_token(version));
+                if let Some(ack) = ack {
+                    negotiate(&mut transport, &ack);
+                }
+
+                let error = transport
+                    .receive_token(&ParserContext::None(()), None, None)
+                    .await
+                    .unwrap_err();
+                assert!(error.to_string().contains("not negotiated"), "{error}");
+            }
+        }
+    }
 
     fn int4_row_context(column_count: usize) -> ParserContext {
         ParserContext::ColumnMetadata(

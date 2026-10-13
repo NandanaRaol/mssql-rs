@@ -215,9 +215,6 @@ fn information_type_reference(
 }
 
 impl DataClassificationTokenParser {
-    // Dispatch reaches this once the negotiated version is plumbed through;
-    // until then only tests and the fuzz target call it.
-    #[cfg_attr(not(any(test, fuzzing)), allow(dead_code))]
     pub(crate) async fn parse_with_version<T>(
         &self,
         reader: &mut T,
@@ -320,13 +317,18 @@ impl<T> TokenParser<T> for DataClassificationTokenParser
 where
     T: TdsPacketReader + Send + Sync,
 {
-    /// The server may send 0xA3 only after the client negotiates LOGIN7 feature
-    /// 0x09, which is not yet advertised. Receiving it is a protocol violation,
-    /// and the payload cannot be skipped safely without knowing its version.
-    async fn parse(&self, _reader: &mut T, _context: &ParserContext) -> TdsResult<Tokens> {
-        Err(classification_error(
-            "token received but the feature was not negotiated",
-        ))
+    /// The payload carries no version, so the layout comes from the version
+    /// negotiated in FEATUREEXTACK. Without one the server sent a token it was
+    /// never asked for, and the payload cannot be skipped safely.
+    async fn parse(&self, reader: &mut T, _context: &ParserContext) -> TdsResult<Tokens> {
+        let version = reader
+            .negotiated_data_classification_version()
+            .ok_or_else(|| {
+                classification_error("token received but the feature was not negotiated")
+            })?;
+        self.parse_with_version(reader, version)
+            .await
+            .map(Tokens::DataClassification)
     }
 }
 
@@ -670,6 +672,38 @@ mod tests {
             .unwrap_err();
 
         assert!(error.to_string().contains("not negotiated"));
+    }
+
+    #[tokio::test]
+    async fn token_parser_uses_the_negotiated_version() {
+        let columns = vec![vec![WireProperty {
+            label: 0,
+            information_type: NULL_DICTIONARY_INDEX,
+            rank: 30,
+        }]];
+        for version in [
+            DataClassificationVersion::Version1,
+            DataClassificationVersion::Version2,
+        ] {
+            let bytes = payload(version, &[("Label", "L")], &[], 40, &columns);
+            let mut reader = MockReader::new(bytes).with_data_classification_version(version);
+
+            let token = DataClassificationTokenParser
+                .parse(&mut reader, &ParserContext::default())
+                .await
+                .unwrap();
+
+            let Tokens::DataClassification(metadata) = token else {
+                panic!("expected a DataClassification token");
+            };
+            assert_eq!(metadata.version, version);
+            let expected_rank = match version {
+                DataClassificationVersion::Version1 => None,
+                DataClassificationVersion::Version2 => Some(SensitivityRank::High),
+            };
+            assert_eq!(metadata.columns[0].properties[0].rank, expected_rank);
+            assert_eq!(reader.remaining(), 0);
+        }
     }
 
     #[tokio::test]
