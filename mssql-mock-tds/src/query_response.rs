@@ -378,6 +378,10 @@ pub struct QueryRegistry {
     /// the response rather than inside it so `QueryResponse` stays
     /// literal-constructible by existing callers.
     trailing_info: HashMap<String, Vec<InfoMessage>>,
+    /// Raw DATACLASSIFICATION (`0xA3`) token bytes sent after a registered
+    /// response's ColMetadata. Kept beside the response for the same reason
+    /// as `trailing_info`.
+    data_classification: HashMap<String, Vec<u8>>,
 }
 
 impl QueryRegistry {
@@ -386,6 +390,7 @@ impl QueryRegistry {
         let mut registry = Self {
             responses: HashMap::new(),
             trailing_info: HashMap::new(),
+            data_classification: HashMap::new(),
         };
 
         // Add default responses
@@ -407,6 +412,33 @@ impl QueryRegistry {
         let query = query.into().to_uppercase();
         self.responses.insert(query.clone(), response);
         self.trailing_info.remove(&query);
+        self.data_classification.remove(&query);
+    }
+
+    /// Register a query response that carries a DATACLASSIFICATION token,
+    /// given as raw `0xA3` token bytes, between its ColMetadata and rows.
+    ///
+    /// The bytes are sent whether or not the client negotiated the feature, so
+    /// a test can also check how an unnegotiated client reacts.
+    ///
+    /// Like [`register`](Self::register), this replaces any previous
+    /// registration for `query`.
+    pub fn register_with_data_classification(
+        &mut self,
+        query: impl Into<String>,
+        response: QueryResponse,
+        data_classification: Vec<u8>,
+    ) {
+        let query = query.into().to_uppercase();
+        self.register(query.clone(), response);
+        self.data_classification.insert(query, data_classification);
+    }
+
+    /// The raw DATACLASSIFICATION token bytes registered for this query, if any.
+    pub fn data_classification(&self, query: &str) -> &[u8] {
+        self.data_classification
+            .get(&query.to_uppercase())
+            .map_or(&[], Vec::as_slice)
     }
 
     /// Register a query response whose info tokens are emitted *after* the

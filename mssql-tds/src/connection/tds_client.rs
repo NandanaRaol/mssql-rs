@@ -10333,6 +10333,42 @@ mod tests {
         assert!(!client.is_connection_dead());
     }
 
+    /// Closing a classified result set before reading it drains the stream;
+    /// the drain must pass over the DATACLASSIFICATION tokens too.
+    #[tokio::test]
+    async fn close_query_drains_past_data_classification_tokens() {
+        use crate::token::data_classification::{
+            DataClassificationMetadata, DataClassificationVersion,
+        };
+        fn classification() -> Tokens {
+            Tokens::DataClassification(DataClassificationMetadata {
+                version: DataClassificationVersion::Version1,
+                sensitivity_labels: Vec::new(),
+                information_types: Vec::new(),
+                rank: None,
+                columns: Vec::new(),
+            })
+        }
+
+        let mut client = create_test_client_with_tokens(vec![
+            int_col_metadata(1),
+            classification(),
+            done_count(CurrentCommand::Select, 0, true),
+            int_col_metadata(1),
+            classification(),
+            done_count(CurrentCommand::Select, 0, false),
+        ]);
+
+        assert_eq!(
+            client.execute("q".to_string(), ()).await.unwrap(),
+            StatementResult::Rows
+        );
+        client.close_query().await.unwrap();
+
+        assert!(!client.has_open_batch());
+        assert!(!client.is_connection_dead());
+    }
+
     /// Under `Continue` one error can be reflected by both the failing
     /// statement's DONEINPROC and the enclosing DONEPROC. Both are accepted, and
     /// the chain is closed afterwards.

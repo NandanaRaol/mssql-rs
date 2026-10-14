@@ -1726,6 +1726,9 @@ impl NetworkTransport {
                 false
             }
             Tokens::Row(_) => false,
+            // Result-set metadata for a cancelled result; the client never
+            // replays it, so retaining it would only count toward the limit.
+            Tokens::DataClassification(_) => false,
             Tokens::Done(done) => {
                 let acknowledged = done.status.contains(DoneStatus::ATTN) && !done.has_more();
                 context.metadata = None;
@@ -3290,6 +3293,64 @@ pub(crate) mod tests {
                     .unwrap_err();
                 assert!(error.to_string().contains("not negotiated"), "{error}");
             }
+        }
+
+        /// A reconnect or redirect performs a fresh login, whose settings
+        /// replace the cached version rather than adding to it.
+        #[tokio::test]
+        async fn a_new_login_replaces_the_cached_version() {
+            let mut transport = transport_with(&[]);
+            negotiate(&mut transport, &[0x02, 0x01]);
+            assert_eq!(
+                transport.negotiated_data_classification_version(),
+                Some(DataClassificationVersion::Version2)
+            );
+
+            transport.notify_session_setting_change(
+                &create_test_negotiated_settings_internal().session_settings,
+            );
+            assert_eq!(transport.negotiated_data_classification_version(), None);
+        }
+
+        /// A cancelled classified result set drains through DONE_ATTN without
+        /// retaining its DATACLASSIFICATION tokens for replay.
+        #[tokio::test(start_paused = true)]
+        async fn attention_drain_discards_classification_tokens() {
+            let version = DataClassificationVersion::Version2;
+            let mut stream = TestPacketBuilder::new(PacketType::TabularResult)
+                .continuation()
+                .append_bytes(&classification_token(version))
+                .append_bytes(&classification_token(version))
+                .build();
+            stream.extend_from_slice(&done_token_message(DoneStatus::ATTN.bits()));
+            let (mut transport, _written) =
+                create_network_transport_with_live_peer_capturing_writes(&stream);
+            negotiate(&mut transport, &[0x02, 0x01]);
+
+            let result = timeout(
+                Duration::from_secs(600),
+                transport.receive_token(&ParserContext::None(()), None, Some(&cancelled_handle())),
+            )
+            .await
+            .expect("the attention drain hung on a classification token");
+
+            assert!(
+                matches!(result, Err(OperationCancelledError(_))),
+                "{result:?}"
+            );
+            assert!(!is_known_dead(&transport));
+            let settlement = transport
+                .take_attention_settlement()
+                .expect("the acknowledgement must produce settlement state");
+            assert!(
+                settlement
+                    .tokens
+                    .iter()
+                    .all(|token| !matches!(token, Tokens::DataClassification(_))),
+                "{:?}",
+                settlement.tokens
+            );
+            assert_eq!(settlement.tokens.len(), 1, "only DONE_ATTN is retained");
         }
     }
 
