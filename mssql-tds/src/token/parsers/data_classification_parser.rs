@@ -726,6 +726,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn string_content_counts_toward_the_parser_budget() {
+        // 256 full labels (255-unit name and id) plus a 252-unit trailing name
+        // fill the budget exactly: 6 + 256 * 1022 + 2 + 504 = 262144.
+        fn labels(last_name_units: usize) -> Vec<(String, String)> {
+            let full = "a".repeat(255);
+            let mut labels = vec![(full.clone(), full); 256];
+            labels.push(("b".repeat(last_name_units), String::new()));
+            labels
+        }
+        async fn parse_labels(
+            labels: &[(String, String)],
+        ) -> TdsResult<DataClassificationMetadata> {
+            let labels: Vec<_> = labels
+                .iter()
+                .map(|(name, id)| (name.as_str(), id.as_str()))
+                .collect();
+            let bytes = payload(DataClassificationVersion::Version1, &labels, &[], -1, &[]);
+            parse(bytes, DataClassificationVersion::Version1).await
+        }
+
+        let at_limit = labels(252);
+        let metadata = parse_labels(&at_limit).await.unwrap();
+        assert_eq!(metadata.sensitivity_labels.len(), 257);
+
+        let error = parse_labels(&labels(255)).await.unwrap_err();
+        assert_single_classification_error(
+            &error,
+            "sensitivity label 256 name exceeds the maximum supported token size of 262144 bytes",
+        );
+    }
+
+    #[tokio::test]
     async fn every_truncated_prefix_passes_the_reader_error_through() {
         let columns = vec![vec![WireProperty {
             label: 0,
