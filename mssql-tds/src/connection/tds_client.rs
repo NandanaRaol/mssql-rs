@@ -4778,6 +4778,16 @@ impl TdsClient {
         self.negotiated_settings.database_collation = collation;
     }
 
+    /// Data Classification version negotiated at login, as its wire value.
+    #[cfg(any(test, feature = "test-util"))]
+    #[doc(hidden)]
+    pub fn negotiated_data_classification_version_for_test(&self) -> Option<u8> {
+        self.negotiated_settings
+            .session_settings
+            .data_classification_version()
+            .map(|version| version as u8)
+    }
+
     #[cfg(any(test, feature = "test-util"))]
     #[doc(hidden)]
     pub async fn execute_sp_unprepare_for_test<'a>(

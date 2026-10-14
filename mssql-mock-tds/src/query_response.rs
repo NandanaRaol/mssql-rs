@@ -417,6 +417,7 @@ impl QueryRegistry {
 
     /// Register a query response that carries a DATACLASSIFICATION token,
     /// given as raw `0xA3` token bytes, between its ColMetadata and rows.
+    /// Applies to both SQL batch and RPC responses.
     ///
     /// The bytes are sent whether or not the client negotiated the feature, so
     /// a test can also check how an unnegotiated client reacts.
@@ -503,6 +504,17 @@ impl QueryRegistry {
         &self,
         haystack: &[u8],
     ) -> Option<(&QueryResponse, &[InfoMessage])> {
+        self.get_by_contained_utf16_text_with_extras(haystack)
+            .map(|(response, _, trailing_info)| (response, trailing_info))
+    }
+
+    /// [`get_by_contained_utf16_text`](Self::get_by_contained_utf16_text),
+    /// also returning any registered DATACLASSIFICATION token bytes and the
+    /// info tokens registered to follow the last row.
+    pub fn get_by_contained_utf16_text_with_extras(
+        &self,
+        haystack: &[u8],
+    ) -> Option<(&QueryResponse, &[u8], &[InfoMessage])> {
         self.responses.iter().find_map(|(query, response)| {
             let needle: Vec<u8> = query
                 .encode_utf16()
@@ -511,6 +523,9 @@ impl QueryRegistry {
             (!needle.is_empty() && haystack.windows(needle.len()).any(|w| w == needle)).then(|| {
                 (
                     response,
+                    self.data_classification
+                        .get(query)
+                        .map_or(&[][..], Vec::as_slice),
                     self.trailing_info.get(query).map_or(&[][..], Vec::as_slice),
                 )
             })
@@ -630,5 +645,33 @@ mod tests {
         let trailing = registry.trailing_info("SELECT trailing");
         assert_eq!(trailing.len(), 1);
         assert_eq!(trailing[0].number, 8154);
+    }
+
+    /// Both lookups the server uses carry the registered classification bytes,
+    /// and a plain re-registration drops them like it drops trailing info.
+    #[test]
+    fn data_classification_reaches_batch_and_rpc_lookups() {
+        let mut registry = QueryRegistry::new();
+        registry.register_with_data_classification(
+            "SELECT classified",
+            QueryResponse::select_one(),
+            vec![0xA3, 0, 0],
+        );
+        let rpc_body: Vec<u8> = "SELECT CLASSIFIED"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+
+        assert_eq!(
+            registry.data_classification("select classified"),
+            [0xA3, 0, 0]
+        );
+        let (_, data_classification, _) = registry
+            .get_by_contained_utf16_text_with_extras(&rpc_body)
+            .expect("RPC lookup should match the registered query");
+        assert_eq!(data_classification, [0xA3, 0, 0]);
+
+        registry.register("SELECT classified", QueryResponse::select_one());
+        assert!(registry.data_classification("SELECT classified").is_empty());
     }
 }

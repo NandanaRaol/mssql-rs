@@ -8,8 +8,7 @@ use crate::protocol::{
     build_attention_ack_packet, build_done_token, build_error_response,
     build_feature_ext_ack_data_classification, build_feature_ext_ack_fedauth,
     build_fedauth_challenge_response, build_login_ack, build_prelogin_response,
-    build_prelogin_response_with_fedauth, build_query_result_with_extras,
-    build_query_result_with_trailing_info, build_routing_response,
+    build_prelogin_response_with_fedauth, build_query_result_with_extras, build_routing_response,
     build_transaction_manager_response, parse_fedauth_token, parse_login7_auth, parse_sql_batch,
     parse_transaction_descriptor_header, parse_transaction_manager_request,
 };
@@ -558,10 +557,16 @@ impl ConnectionProcessor {
                     let registered = {
                         let registry = self.query_registry.lock().await;
                         registry
-                            .get_by_contained_utf16_text_with_trailing_info(packet_body)
-                            .map(|(response, trailing)| (response.clone(), trailing.to_vec()))
+                            .get_by_contained_utf16_text_with_extras(packet_body)
+                            .map(|(response, data_classification, trailing)| {
+                                (
+                                    response.clone(),
+                                    data_classification.to_vec(),
+                                    trailing.to_vec(),
+                                )
+                            })
                     };
-                    if let Some((response_data, trailing_info)) = registered {
+                    if let Some((response_data, data_classification, trailing_info)) = registered {
                         info!("Found registered response for RPC request");
                         match self
                             .wait_out_delay_or_attention(socket, response_data.delay)
@@ -571,8 +576,9 @@ impl ConnectionProcessor {
                             DelayOutcome::Closed => return Ok(None),
                             DelayOutcome::Elapsed => {}
                         }
-                        Some(build_query_result_with_trailing_info(
+                        Some(build_query_result_with_extras(
                             &response_data,
+                            &data_classification,
                             &trailing_info,
                         ))
                     } else {
@@ -1491,8 +1497,9 @@ async fn handle_connection(
                                 // Look up query in registry
                                 let registry = query_registry.lock().await;
                                 if let Some(response) = registry.get(&sql) {
-                                    Some(build_query_result_with_trailing_info(
+                                    Some(build_query_result_with_extras(
                                         response,
+                                        registry.data_classification(&sql),
                                         registry.trailing_info(&sql),
                                     ))
                                 } else if sql.to_uppercase().starts_with("SELECT") {

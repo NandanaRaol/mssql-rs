@@ -670,6 +670,15 @@ impl ClientContext {
         )
     }
 
+    /// Requests Data Classification `version` (1 or 2) in LOGIN7. The setting
+    /// stays crate-private until the public API is designed.
+    #[cfg(any(test, feature = "test-util"))]
+    #[doc(hidden)]
+    pub fn request_data_classification_for_test(&mut self, version: u8) -> TdsResult<()> {
+        self.requested_data_classification_version = Some(version.try_into()?);
+        Ok(())
+    }
+
     pub(crate) fn tds_version(&self) -> TdsVersion {
         if matches!(self.encryption_options.mode, EncryptionSetting::Strict) {
             TdsVersion::V8_0
