@@ -98,9 +98,8 @@ struct ParseBudget {
 
 impl ParseBudget {
     fn claim(&mut self, bytes: usize, field: Field) -> TdsResult<()> {
-        let consumed = self.consumed.checked_add(bytes).ok_or_else(|| {
-            classification_error(format!("byte count overflow while reading {field}"))
-        })?;
+        // Saturating: a total past the budget is rejected below either way.
+        let consumed = self.consumed.saturating_add(bytes);
         if consumed > MAX_DATA_CLASSIFICATION_TOKEN_BYTES {
             return Err(classification_error(format!(
                 "{field} exceeds the maximum supported token size of \
@@ -117,9 +116,7 @@ impl ParseBudget {
         minimum_item_bytes: usize,
         field: Field,
     ) -> TdsResult<()> {
-        let minimum_bytes = usize::from(count)
-            .checked_mul(minimum_item_bytes)
-            .ok_or_else(|| classification_error(format!("{field} {count} size overflow")))?;
+        let minimum_bytes = usize::from(count).saturating_mul(minimum_item_bytes);
         let remaining = MAX_DATA_CLASSIFICATION_TOKEN_BYTES - self.consumed;
         if minimum_bytes > remaining {
             return Err(classification_error(format!(
@@ -189,20 +186,28 @@ async fn read_b_varchar<T: TdsPacketReader + Send + Sync>(
         .map_err(|error| classification_error(format!("invalid UTF-16 in {field}: {error}")))
 }
 
-fn label_reference(
-    index: u16,
-    dictionary_len: usize,
-    field: Field,
-) -> TdsResult<SensitivityLabelReference> {
+/// Validates a dictionary index; `None` is the `0xFFFF` "unspecified" value.
+fn dictionary_index(index: u16, dictionary_len: usize, field: Field) -> TdsResult<Option<u16>> {
     if index == NULL_DICTIONARY_INDEX {
-        return Ok(SensitivityLabelReference::Unspecified);
+        return Ok(None);
     }
     if usize::from(index) >= dictionary_len {
         return Err(classification_error(format!(
             "{field} {index} is outside dictionary length {dictionary_len}"
         )));
     }
-    Ok(SensitivityLabelReference::Index(index))
+    Ok(Some(index))
+}
+
+fn label_reference(
+    index: u16,
+    dictionary_len: usize,
+    field: Field,
+) -> TdsResult<SensitivityLabelReference> {
+    Ok(dictionary_index(index, dictionary_len, field)?.map_or(
+        SensitivityLabelReference::Unspecified,
+        SensitivityLabelReference::Index,
+    ))
 }
 
 fn information_type_reference(
@@ -210,15 +215,10 @@ fn information_type_reference(
     dictionary_len: usize,
     field: Field,
 ) -> TdsResult<InformationTypeReference> {
-    if index == NULL_DICTIONARY_INDEX {
-        return Ok(InformationTypeReference::Unspecified);
-    }
-    if usize::from(index) >= dictionary_len {
-        return Err(classification_error(format!(
-            "{field} {index} is outside dictionary length {dictionary_len}"
-        )));
-    }
-    Ok(InformationTypeReference::Index(index))
+    Ok(dictionary_index(index, dictionary_len, field)?.map_or(
+        InformationTypeReference::Unspecified,
+        InformationTypeReference::Index,
+    ))
 }
 
 impl DataClassificationTokenParser {

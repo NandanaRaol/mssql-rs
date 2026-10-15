@@ -133,7 +133,6 @@ pub(crate) struct ColumnSensitivity {
 }
 
 impl ColumnSensitivity {
-    /// Returns whether the column has at least one sensitivity property.
     // Consumed by result-set integration; until then only tests call it.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn is_classified(&self) -> bool {
