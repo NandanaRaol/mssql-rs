@@ -9,9 +9,12 @@
 //!
 //! The server answers in FEATUREEXTACK with
 //! `DATACLASSIFICATION_VERSION (BYTE) | IsEnabled (BYTE) | VersionSpecificData`.
-//! The requested version is the client's maximum: the server may acknowledge
-//! that version or a lower one, and the acknowledged version fixes the `0xA3`
-//! token layout. It applies only when `IsEnabled` is non-zero.
+//! The requested version is the client's maximum, so the server normally
+//! acknowledges it or a lower one. Any supported version is accepted, as in
+//! msodbcsql, SqlClient and JDBC, which bound the acknowledgement by their
+//! highest supported version rather than the request. The acknowledged
+//! version fixes the `0xA3` token layout, and applies only when `IsEnabled` is
+//! non-zero.
 
 use async_trait::async_trait;
 use tracing::warn;
@@ -85,17 +88,7 @@ impl Feature for DataClassificationFeature {
                 "Invalid Data Classification feature acknowledgement version {version}"
             ))
         })?;
-        // [MS-TDS] makes the requested version the client's maximum, and sends
-        // sensitivity rank only when both sides use version 2. A higher
-        // acknowledgement leaves the 0xA3 layout undefined, so refuse it.
-        if version as u8 > self.requested_version as u8 {
-            return Err(Error::ProtocolError(format!(
-                "Server acknowledged Data Classification version {} above the requested \
-                 version {}",
-                version as u8, self.requested_version as u8
-            )));
-        }
-        if version != self.requested_version {
+        if (version as u8) < (self.requested_version as u8) {
             warn!(
                 requested = ?self.requested_version,
                 acknowledged = ?version,
@@ -233,13 +226,14 @@ mod tests {
         }
     }
 
+    /// msodbcsql (`Parse.cpp`), SqlClient and JDBC bound the acknowledgement
+    /// by the highest version they support, not by the request.
     #[test]
-    fn rejects_acknowledged_version_above_the_requested_one() {
-        let error = acknowledged(DataClassificationVersion::Version1, &[0x02, 0x01]).unwrap_err();
-        assert!(
-            matches!(&error, Error::ProtocolError(message)
-                if message.contains("version 2 above the requested version 1")),
-            "{error}"
+    fn accepts_an_acknowledged_version_above_the_requested_one() {
+        let feature = acknowledged(DataClassificationVersion::Version1, &[0x02, 0x01]).unwrap();
+        assert_eq!(
+            feature.negotiated_data_classification_version(),
+            Some(DataClassificationVersion::Version2)
         );
     }
 
