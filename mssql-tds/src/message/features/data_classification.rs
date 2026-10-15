@@ -12,9 +12,11 @@
 //! The requested version is the client's maximum, so the server normally
 //! acknowledges it or a lower one. Any supported version is accepted, as in
 //! msodbcsql, SqlClient and JDBC, which bound the acknowledgement by their
-//! highest supported version rather than the request. The acknowledged
-//! version fixes the `0xA3` token layout, and applies only when `IsEnabled` is
-//! non-zero.
+//! highest supported version rather than the request. The `0xA3` token layout
+//! is the lower of the requested and acknowledged versions: [MS-TDS] 2.2.7.5
+//! sends `SensitivityRank` only when both are version 2. msodbcsql takes the
+//! layout from the acknowledgement alone. The version applies only when
+//! `IsEnabled` is non-zero.
 //!
 //! `IsEnabled == 0` leaves the feature off, as in SqlClient and JDBC.
 //! msodbcsql requires the byte but never reads it, so it enables the feature
@@ -92,14 +94,17 @@ impl Feature for DataClassificationFeature {
                 "Invalid Data Classification feature acknowledgement version {version}"
             ))
         })?;
-        if (version as u8) < (self.requested_version as u8) {
+        let layout = if (version as u8) < (self.requested_version as u8) {
             warn!(
                 requested = ?self.requested_version,
                 acknowledged = ?version,
                 "Server acknowledged a lower Data Classification version than requested"
             );
-        }
-        self.negotiated_version = (is_enabled != 0).then_some(version);
+            version
+        } else {
+            self.requested_version
+        };
+        self.negotiated_version = (is_enabled != 0).then_some(layout);
         Ok(())
     }
 
@@ -231,13 +236,14 @@ mod tests {
     }
 
     /// msodbcsql (`Parse.cpp`), SqlClient and JDBC bound the acknowledgement
-    /// by the highest version they support, not by the request.
+    /// by the highest version they support, so a higher one is accepted. The
+    /// layout stays V1: [MS-TDS] 2.2.7.5 sends ranks only when both are V2.
     #[test]
-    fn accepts_an_acknowledged_version_above_the_requested_one() {
+    fn accepts_a_higher_acknowledgement_with_the_requested_layout() {
         let feature = acknowledged(DataClassificationVersion::Version1, &[0x02, 0x01]).unwrap();
         assert_eq!(
             feature.negotiated_data_classification_version(),
-            Some(DataClassificationVersion::Version2)
+            Some(DataClassificationVersion::Version1)
         );
     }
 

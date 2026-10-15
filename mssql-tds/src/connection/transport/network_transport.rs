@@ -3241,12 +3241,52 @@ pub(crate) mod tests {
         }
 
         fn negotiate(transport: &mut NetworkTransport, ack: &[u8]) {
+            negotiate_requesting(transport, DataClassificationVersion::Version2, ack);
+        }
+
+        fn negotiate_requesting(
+            transport: &mut NetworkTransport,
+            requested: DataClassificationVersion,
+            ack: &[u8],
+        ) {
             let mut settings = create_test_negotiated_settings_internal().session_settings;
-            let mut feature = DataClassificationFeature::new(DataClassificationVersion::Version2);
+            let mut feature = DataClassificationFeature::new(requested);
             feature.set_acknowledged(true);
             feature.deserialize(ack).unwrap();
             settings.supported_features.push(Box::new(feature));
             transport.notify_session_setting_change(&settings);
+        }
+
+        /// [MS-TDS] 2.2.7.5 sends ranks only when the request and the
+        /// acknowledgement are both V2, so either mixed pair carries the V1
+        /// layout. Parsing it as V2 would read the column count as a rank.
+        #[tokio::test]
+        async fn mixed_versions_parse_the_v1_layout() {
+            for (requested, ack_version) in [
+                (DataClassificationVersion::Version1, 0x02),
+                (DataClassificationVersion::Version2, 0x01),
+            ] {
+                let mut transport =
+                    transport_with(&classification_token(DataClassificationVersion::Version1));
+                negotiate_requesting(&mut transport, requested, &[ack_version, 0x01]);
+
+                let token = transport
+                    .receive_token(&ParserContext::None(()), None, None)
+                    .await
+                    .unwrap();
+                let Tokens::DataClassification(metadata) = token else {
+                    panic!("expected a DataClassification token, got {token:?}");
+                };
+                assert_eq!(metadata.version, DataClassificationVersion::Version1);
+                assert_eq!(metadata.rank, None);
+                assert_eq!(metadata.columns.len(), 1);
+
+                let next = transport
+                    .receive_token(&ParserContext::None(()), None, None)
+                    .await
+                    .unwrap();
+                assert!(matches!(next, Tokens::Done(_)), "{next:?}");
+            }
         }
 
         #[tokio::test]
