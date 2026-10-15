@@ -15,6 +15,10 @@
 //! highest supported version rather than the request. The acknowledged
 //! version fixes the `0xA3` token layout, and applies only when `IsEnabled` is
 //! non-zero.
+//!
+//! `IsEnabled == 0` leaves the feature off, as in SqlClient and JDBC.
+//! msodbcsql requires the byte but never reads it, so it enables the feature
+//! regardless.
 
 use async_trait::async_trait;
 use tracing::warn;

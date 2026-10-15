@@ -10,6 +10,13 @@
 //! Reader errors pass through unchanged so callers can still tell a lost
 //! transport from a malformed token. Only problems this parser detects itself
 //! are reported as `DATACLASSIFICATION` protocol errors.
+//!
+//! The payload is validated while it is parsed: dictionary indexes must be in
+//! range or `0xFFFF`, ranks must be defined values, and the token must fit the
+//! parser's byte budget. SqlClient rejects out-of-range indexes and undefined
+//! ranks the same way. msodbcsql validates nothing because it hands the
+//! application raw bytes; this client exposes typed metadata, which cannot
+//! represent an invalid reference.
 
 use std::fmt;
 
